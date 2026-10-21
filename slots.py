@@ -1,14 +1,19 @@
-"""Bookable slots, 10-minute holds and confirmed bookings (data/bookings.json)."""
+"""Bookable slots, 10-minute holds and confirmed bookings (SQLite tables holds / bookings)."""
 import secrets
 from datetime import datetime, timedelta, time as dtime
 
 import config
+import db
 import store
 
-FILE = "bookings.json"
 PARTS = {"morning": (5, 12), "afternoon": (12, 17), "evening": (17, 24), "any": (0, 24)}
 TICKET_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 LIVE = ("held", "awaiting_payment")
+
+# Extra busy-time providers, e.g. Google Calendar: callables returning [(start, end), ...].
+EXTRA_BUSY = []
+# Called after a booking is created / moved / cancelled, e.g. calendar + sheets sync: fn(event, booking).
+BOOKING_HOOKS = []
 
 
 def call_types():
@@ -19,21 +24,42 @@ def call_type(ct_id):
     return next((c for c in call_types() if c["id"] == ct_id), None)
 
 
-def _load():
-    return store.read_json(FILE, {"holds": {}, "bookings": {}})
-
-
 def _parse(s):
     return datetime.fromisoformat(s)
 
 
-def _busy(data):
-    """Intervals that block new slots: confirmed bookings + live holds."""
+def _holds(c, where="1=1", params=()):
+    return [db.loads(r["data"]) for r in c.execute(f"SELECT data FROM holds WHERE {where}", params)]
+
+
+def _bookings(c, where="1=1", params=()):
+    return [db.loads(r["data"]) for r in c.execute(f"SELECT data FROM bookings WHERE {where} ORDER BY start", params)]
+
+
+def _save_hold(c, h):
+    c.execute("INSERT OR REPLACE INTO holds VALUES (?, ?, ?, ?)", (h["id"], h["phone"], h["status"], db.dumps(h)))
+
+
+def _save_booking(c, b):
+    c.execute("INSERT OR REPLACE INTO bookings VALUES (?, ?, ?, ?, ?)",
+              (b["ticket"], b["phone"], b["status"], b["start"], db.dumps(b)))
+
+
+def _live_holds(c):
     now = config.now()
-    out = [(_parse(b["start"]), _parse(b["end"])) for b in data["bookings"].values()
-           if b.get("status", "confirmed") == "confirmed"]
-    out += [(_parse(h["start"]), _parse(h["end"])) for h in data["holds"].values()
-            if h["status"] in LIVE and _parse(h["expires"]) > now]
+    return [h for h in _holds(c, "status IN (?, ?)", LIVE) if _parse(h["expires"]) > now]
+
+
+def _busy(c, ignore_ticket=None):
+    """Intervals that block new slots: confirmed bookings + live holds + external calendars."""
+    out = [(_parse(b["start"]), _parse(b["end"])) for b in _bookings(c, "status = 'confirmed'")
+           if b["ticket"] != ignore_ticket]
+    out += [(_parse(h["start"]), _parse(h["end"])) for h in _live_holds(c)]
+    for provider in EXTRA_BUSY:
+        try:
+            out += provider()
+        except Exception as e:  # an external calendar must never break booking
+            print(f"[error] busy provider: {e}")
     return out
 
 
@@ -42,7 +68,7 @@ def _conflicts(start, end, busy):
     return any(start < be + buf and bs < end + buf for bs, be in busy)
 
 
-def free_slots(ct_id, date=None, part="any", limit=10):
+def free_slots(ct_id, date=None, part="any", limit=10, ignore_ticket=None):
     """Next free start times for a call type, optionally on one date / part of day."""
     ct = call_type(ct_id)
     if not ct:
@@ -52,10 +78,8 @@ def free_slots(ct_id, date=None, part="any", limit=10):
     step = timedelta(minutes=hours.get("slot_step_minutes", 30))
     earliest = config.now() + timedelta(hours=hours.get("min_notice_hours", 0))
     lo, hi = PARTS.get(part, PARTS["any"])
-    open_t = dtime.fromisoformat(hours["start"])
-    close_t = dtime.fromisoformat(hours["end"])
-    with store.LOCK:
-        busy = _busy(_load())
+    open_t, close_t = dtime.fromisoformat(hours["start"]), dtime.fromisoformat(hours["end"])
+    busy = _busy(db.conn(), ignore_ticket)
     today = config.now().date()
     days = [date] if date else [today + timedelta(days=i) for i in range(hours.get("days_ahead", 14) + 1)]
     out = []
@@ -75,9 +99,12 @@ def free_slots(ct_id, date=None, part="any", limit=10):
 
 def slot_label(dt, with_day=True):
     """'Tue 20 Oct · 6:00 PM'"""
+    dt = dt.astimezone(config.TZ)
     clock = dt.strftime("%I:%M %p").lstrip("0")
     return f"{dt.strftime('%a %d %b')} · {clock}" if with_day else clock
 
+
+# ---- holds ---------------------------------------------------------------------------------
 
 def create_hold(phone, name, ct_id, start):
     """Reserve a slot for HOLD_MINUTES. Returns the hold, or None if someone else took it."""
@@ -85,38 +112,35 @@ def create_hold(phone, name, ct_id, start):
     if not ct:
         return None
     end = start + timedelta(minutes=ct["minutes"])
-    with store.LOCK:
-        data = _load()
-        # One live hold per customer - a new pick replaces the old one.
-        for h in data["holds"].values():
-            if h["phone"] == phone and h["status"] in LIVE:
-                h["status"] = "replaced"
-        if start < config.now() or _conflicts(start, end, _busy(data)):
+    with db.tx() as c:
+        for h in _holds(c, "phone = ? AND status IN (?, ?)", (phone, *LIVE)):
+            h["status"] = "replaced"  # one live hold per customer - a new pick replaces the old one
+            _save_hold(c, h)
+        if start < config.now() or _conflicts(start, end, _busy(c)):
             return None
-        hold_id = "H" + secrets.token_hex(5)
         hold = {
-            "id": hold_id, "phone": phone, "name": name, "call_type": ct_id,
+            "id": "H" + secrets.token_hex(5), "phone": phone, "name": name, "call_type": ct_id,
             "start": start.isoformat(), "end": end.isoformat(),
             "expires": (config.now() + timedelta(minutes=config.HOLD_MINUTES)).isoformat(timespec="seconds"),
             "amount": ct.get("price_inr", 0), "status": "held", "payment": {},
         }
-        data["holds"][hold_id] = hold
-        store.write_json(FILE, data)
+        _save_hold(c, hold)
     return hold
 
 
 def get_hold(hold_id):
-    return _load()["holds"].get(hold_id)
+    found = _holds(db.conn(), "id = ?", (hold_id,))
+    return found[0] if found else None
 
 
 def update_hold(hold_id, **fields):
-    with store.LOCK:
-        data = _load()
-        if hold_id in data["holds"]:
-            data["holds"][hold_id].update(fields)
-            store.write_json(FILE, data)
-            return data["holds"][hold_id]
-    return None
+    with db.tx() as c:
+        found = _holds(c, "id = ?", (hold_id,))
+        if not found:
+            return None
+        found[0].update(fields)
+        _save_hold(c, found[0])
+    return found[0]
 
 
 def release_hold(hold_id, status="released"):
@@ -127,63 +151,87 @@ def expire_holds():
     """Mark holds past their time as expired; returns them so the customer can be told."""
     now = config.now()
     expired = []
-    with store.LOCK:
-        data = _load()
-        for h in data["holds"].values():
-            if h["status"] in LIVE and _parse(h["expires"]) <= now:
+    with db.tx() as c:
+        for h in _holds(c, "status IN (?, ?)", LIVE):
+            if _parse(h["expires"]) <= now:
                 h["status"] = "expired"
+                _save_hold(c, h)
                 expired.append(h)
-        if expired:
-            store.write_json(FILE, data)
     return expired
 
 
-def _ticket(data):
+def live_hold(phone):
+    holds = [h for h in _live_holds(db.conn()) if h["phone"] == phone]
+    return holds[-1] if holds else None
+
+
+# ---- bookings --------------------------------------------------------------------------------
+
+def _ticket(c):
     prefix = config.BRAND.get("ticket_prefix", "BK")
     while True:
         t = f"{prefix}-" + "".join(secrets.choice(TICKET_CHARS) for _ in range(4))
-        if t not in data["bookings"]:
+        if not c.execute("SELECT 1 FROM bookings WHERE ticket = ?", (t,)).fetchone():
             return t
+
+
+def run_hooks(event, booking):
+    for hook in BOOKING_HOOKS:
+        try:
+            hook(event, booking)
+        except Exception as e:
+            print(f"[error] booking hook ({event}): {e}")
 
 
 def confirm_hold(hold_id, paid_via, payment_ref=None):
     """Turn a hold into a booking. Returns (booking, None) or (None, reason)."""
-    with store.LOCK:
-        data = _load()
-        h = data["holds"].get(hold_id)
-        if not h:
+    with db.tx() as c:
+        found = _holds(c, "id = ?", (hold_id,))
+        if not found:
             return None, "unknown hold"
+        h = found[0]
         if h["status"] == "confirmed":
-            return data["bookings"].get(h.get("ticket")), None
+            return get_booking(h.get("ticket")), None
         if h["status"] not in LIVE:
             # Hold lapsed (e.g. payment arrived late): book only if the slot is still free.
-            if _conflicts(_parse(h["start"]), _parse(h["end"]), _busy(data)):
+            if _conflicts(_parse(h["start"]), _parse(h["end"]), _busy(c)):
                 h["status"] = "paid_slot_taken"
-                store.write_json(FILE, data)
+                _save_hold(c, h)
                 return None, "slot taken"
-        ticket = _ticket(data)
         booking = {
-            "ticket": ticket, "phone": h["phone"], "name": h["name"], "call_type": h["call_type"],
+            "ticket": _ticket(c), "phone": h["phone"], "name": h["name"], "call_type": h["call_type"],
             "start": h["start"], "end": h["end"], "amount": h["amount"], "paid_via": paid_via,
-            "payment_ref": payment_ref, "created": config.now().isoformat(timespec="seconds"),
-            "status": "confirmed",
+            "payment_ref": payment_ref, "created": store.now_iso(), "status": "confirmed",
         }
-        data["bookings"][ticket] = booking
-        h["status"], h["ticket"] = "confirmed", ticket
-        store.write_json(FILE, data)
+        _save_booking(c, booking)
+        h["status"], h["ticket"] = "confirmed", booking["ticket"]
+        _save_hold(c, h)
     store.append_jsonl("bookings.jsonl", {"event": "confirmed", **booking})
-    print(f"[booking] {ticket} {h['phone']} {h['call_type']} {h['start']} via {paid_via}")
-    return booking, None
+    print(f"[booking] {booking['ticket']} {h['phone']} {h['call_type']} {h['start']} via {paid_via}")
+    run_hooks("confirmed", booking)
+    return get_booking(booking["ticket"]), None
+
+
+def get_booking(ticket):
+    found = _bookings(db.conn(), "ticket = ?", ((ticket or "").upper(),))
+    return found[0] if found else None
+
+
+def update_booking(ticket, **fields):
+    with db.tx() as c:
+        found = _bookings(c, "ticket = ?", (ticket,))
+        if not found:
+            return None
+        found[0].update(fields)
+        _save_booking(c, found[0])
+    return found[0]
 
 
 def upcoming_bookings(phone=None):
     now = config.now()
-    out = [b for b in _load()["bookings"].values()
-           if b.get("status") == "confirmed" and _parse(b["end"]) > now and (phone is None or b["phone"] == phone)]
-    return sorted(out, key=lambda b: b["start"])
+    rows = _bookings(db.conn(), "status = 'confirmed'")
+    return [b for b in rows if _parse(b["end"]) > now and (phone is None or b["phone"] == phone)]
 
 
-def live_hold(phone):
-    holds = [h for h in _load()["holds"].values()
-             if h["phone"] == phone and h["status"] in LIVE and _parse(h["expires"]) > config.now()]
-    return holds[-1] if holds else None
+def all_bookings():
+    return _bookings(db.conn())

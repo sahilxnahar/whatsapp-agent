@@ -24,6 +24,7 @@ import anthropic  # noqa: E402
 import httpx2 as httpx  # noqa: E402 - the SDK's HTTP library
 
 import bot  # noqa: E402
+import db  # noqa: E402
 import brain  # noqa: E402
 import config  # noqa: E402
 import flows  # noqa: E402
@@ -90,8 +91,7 @@ def bad_request(message):
 
 class Base(unittest.TestCase):
     def setUp(self):
-        for p in Path(TMP).glob("*.json*"):
-            p.unlink()
+        db.reset_all()
         flows._sessions.clear()
         router._rate.clear()
         self.sender = FakeSender(echo=False)
@@ -149,9 +149,9 @@ class Booking(Base):
         first_slot = options(self.sender)[0][0]
         self.assertTrue(first_slot.startswith("slot:intro:"))
         self.send(tap(first_slot))
-        bookings = store.read_json("bookings.json", {})["bookings"]
+        bookings = slots.all_bookings()
         self.assertEqual(len(bookings), 1)
-        self.assertEqual(next(iter(bookings.values()))["paid_via"], "free")
+        self.assertEqual(bookings[0]["paid_via"], "free")
         self.assertEqual(self.sender.outbox[-2]["type"], "image")  # ticket
         # Another customer no longer sees that slot.
         other = FakeSender(echo=False)
@@ -168,7 +168,7 @@ class Booking(Base):
         pay_buttons = options(self.sender)
         self.assertEqual(pay_buttons[0][1], "I've paid")
         self.send(tap(pay_buttons[0][0]))
-        booking = next(iter(store.read_json("bookings.json", {})["bookings"].values()))
+        booking = slots.all_bookings()[0]
         self.assertEqual(booking["paid_via"], "demo")
         self.assertEqual(booking["amount"], 999)
 
@@ -187,8 +187,8 @@ class Booking(Base):
         self.send(tap("book:type:consult"))
         self.send(tap(options(self.sender)[0][0]))
         self.send(tap(options(self.sender)[1][0]))  # Cancel
-        holds = store.read_json("bookings.json", {})["holds"]
-        self.assertEqual(next(iter(holds.values()))["status"], "released")
+        hold = db.loads(db.one("SELECT data FROM holds")["data"])
+        self.assertEqual(hold["status"], "released")
 
 
 class WaitlistAndHandover(Base):
@@ -239,7 +239,7 @@ class ClaudeBrain(Base):
         self.assertTrue(first["messages"][-1]["content"].startswith("["))  # date header
         second = fake.calls[1]["messages"]
         self.assertEqual(second[-1]["content"][0]["type"], "tool_result")
-        saved = store.read_json("chats.json", {})[PHONE]["messages"]
+        saved = store.get_chat(PHONE)["messages"]
         self.assertEqual([m["role"] for m in saved], ["user", "assistant", "user", "assistant"])
 
     def test_lead_json_is_stripped_and_logged(self):
@@ -279,11 +279,10 @@ class ClaudeBrain(Base):
         self.assertIn("can't help", self.sender.last("interactive")["interactive"]["body"]["text"])
 
     def test_model_change_strips_thinking_from_history(self):
-        chats = {PHONE: {"fingerprint": "old", "messages": [
+        store.save_chat(PHONE, "old", [
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": [{"type": "thinking", "thinking": "", "signature": "s"},
-                                              {"type": "text", "text": "hello"}]}]}}
-        store.write_json("chats.json", chats)
+                                              {"type": "text", "text": "hello"}]}])
         hist = brain.load_history(PHONE)
         self.assertEqual(hist[1]["content"], [{"type": "text", "text": "hello"}])
 

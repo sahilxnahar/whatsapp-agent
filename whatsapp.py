@@ -100,6 +100,17 @@ class BaseSender:
             "name": name, "language": {"code": language}, **({"components": components} if components else {})}},
             log=f"[out] {to}: <template {name}>")
 
+    def _post(self, payload, log=""):
+        """Send via the subclass, then record it in the message log (powers the owner inbox)."""
+        ok = self._send(payload, log)
+        if ok:
+            try:
+                kind, body = summarize(payload)
+                store.log_message(payload["to"], "out", kind, body, payload)
+            except Exception as e:  # logging must never block a reply
+                print(f"[error] message log: {e}")
+        return ok
+
     @staticmethod
     def _decorate(interactive, header, footer):
         if header:
@@ -133,7 +144,7 @@ class WhatsAppSender(BaseSender):
             return r
         return None
 
-    def _post(self, payload, log=""):
+    def _send(self, payload, log=""):
         if log:
             print(log)
         payload = {"messaging_product": "whatsapp", "recipient_type": "individual", **payload}
@@ -159,8 +170,7 @@ class WhatsAppSender(BaseSender):
             print(f"[error] file not found: {path}")
             return None
         key = f"{path}|{path.stat().st_mtime_ns}|{path.stat().st_size}"
-        cache = store.read_json("media_cache.json", {})
-        hit = cache.get(key)
+        hit = store.kv_get(f"media:{key}")
         if hit and datetime.fromisoformat(hit["at"]) > config.now() - timedelta(days=MEDIA_CACHE_DAYS):
             return hit["id"]
         mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
@@ -171,8 +181,7 @@ class WhatsAppSender(BaseSender):
         if r is None or r.status_code >= 400:
             return None
         media_id = r.json().get("id")
-        cache[key] = {"id": media_id, "at": config.now().isoformat(timespec="seconds")}
-        store.write_json("media_cache.json", cache)
+        store.kv_set(f"media:{key}", {"id": media_id, "at": config.now().isoformat(timespec="seconds")})
         return media_id
 
     def subscribe_app(self):
@@ -186,6 +195,27 @@ class WhatsAppSender(BaseSender):
             print(f"[setup] apps subscribed to this WABA: {apps or 'none'}")
             return bool(apps)
         return False
+
+
+def summarize(payload):
+    """(kind, readable body) for the message log."""
+    t = payload.get("type")
+    if t == "text":
+        return "text", payload["text"]["body"]
+    if t == "interactive":
+        inter = payload["interactive"]
+        if inter["type"] == "button":
+            opts = [b["reply"]["title"] for b in inter["action"]["buttons"]]
+        else:
+            opts = [r["title"] for s in inter["action"]["sections"] for r in s["rows"]]
+        return inter["type"], f"{inter['body']['text']}\n[{' | '.join(opts)}]"
+    if t == "image":
+        return "image", payload["image"].get("caption") or "<image>"
+    if t == "document":
+        return "document", f"<{payload['document'].get('filename', 'file')}>"
+    if t == "template":
+        return "template", f"<template {payload['template']['name']}>"
+    return t or "unknown", ""
 
 
 def _error_text(r):
@@ -203,7 +233,7 @@ class FakeSender(BaseSender):
         self.outbox = []
         self.echo = echo
 
-    def _post(self, payload, log=""):
+    def _send(self, payload, log=""):
         self.outbox.append(payload)
         if self.echo and log:
             print(log.replace("[out]", "  bot >", 1))

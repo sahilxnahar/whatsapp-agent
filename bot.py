@@ -8,6 +8,7 @@
   python bot.py resume <phone>         hand a paused chat back to the AI
   python bot.py reset <phone>          clear the AI's memory for a customer
   python bot.py confirm <hold_id>      confirm a manually verified payment and send the ticket
+  python bot.py migrate                import v1 data/*.json(l) files into data/bot.db
   python bot.py summary [--send]       today's chats, leads, bookings (optionally WhatsApp it to OWNER_PHONE)
 
 Production: gunicorn --workers 1 --threads 8 --bind 0.0.0.0:$PORT "bot:create_app()"
@@ -196,7 +197,7 @@ def cmd_summary(send=False):
     def todays(name):
         return [r for r in store.read_jsonl(name) if r.get("ts", "").startswith(today)]
 
-    contacts = store.read_json("contacts.json", {})
+    contacts = store.all_contacts()
     active = sum(1 for c in contacts.values() if (c.get("last_inbound") or "").startswith(today))
     new = sum(1 for c in contacts.values() if (c.get("first_seen") or "").startswith(today))
     leads, bookings = todays("leads.jsonl"), todays("bookings.jsonl")
@@ -253,6 +254,10 @@ def main(argv):
             print("Confirmed", booking["ticket"])
         else:
             print("Could not confirm:", problem)
+    elif cmd == "migrate":
+        import db
+        moved = db.migrate_from_json()
+        print("Imported into data/bot.db:", ", ".join(moved) or "nothing to import")
     elif cmd == "summary":
         cmd_summary(send="--send" in argv)
     else:

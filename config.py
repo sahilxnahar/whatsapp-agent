@@ -27,6 +27,9 @@ WHATSAPP_APP_SECRET = env("WHATSAPP_APP_SECRET")
 GRAPH_VERSION = env("GRAPH_VERSION", "v25.0")
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = env("CLAUDE_MODEL", "claude-opus-5-5")
+# Cost routing: "auto" starts chats on the fast model and escalates to CLAUDE_MODEL when needed; "off" = always CLAUDE_MODEL.
+ROUTING = env("ROUTING", "off").lower()
+CLAUDE_MODEL_FAST = env("CLAUDE_MODEL_FAST", "claude-haiku-5-5")
 PORT = int(env("PORT", "8000"))
 OWNER_PHONE = env("OWNER_PHONE")  # digits with country code, e.g. 919812345678
 
@@ -52,6 +55,33 @@ def load_business():
 BUSINESS = load_business()
 BRAND = BUSINESS["brand"]
 TZ = ZoneInfo(BRAND.get("timezone", "Asia/Kolkata"))
+WATCHED = ("business.toml", "knowledge.md")
+
+
+def _mtimes():
+    return tuple((ROOT / f).stat().st_mtime_ns if (ROOT / f).exists() else 0 for f in WATCHED)
+
+
+_loaded_mtimes = _mtimes()
+
+
+def reload_if_changed():
+    """Hot reload: pick up edits to business.toml / knowledge.md without a restart. True if reloaded."""
+    global BUSINESS, BRAND, TZ, _loaded_mtimes
+    current = _mtimes()
+    if current == _loaded_mtimes:
+        return False
+    try:
+        business = load_business()
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        print(f"[error] business.toml not reloaded (fix the file): {e}")
+        _loaded_mtimes = current  # don't retry every message; next save triggers again
+        return False
+    BUSINESS, BRAND = business, business["brand"]
+    TZ = ZoneInfo(BRAND.get("timezone", "Asia/Kolkata"))
+    _loaded_mtimes = current
+    print("[setup] business.toml / knowledge.md changed - reloaded")
+    return True
 
 
 def now():

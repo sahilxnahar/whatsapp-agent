@@ -40,15 +40,23 @@ class Ctx:
 # ---- sessions ---------------------------------------------------------------
 
 def session(phone):
+    """Current flow state. Cached in memory, persisted in SQLite so it survives restarts."""
     with _lock:
-        s = _sessions.get(phone)
+        s = _sessions.get(phone) or store.load_session(phone)
         if s and time.time() - s["at"] > SESSION_TTL:
             s = None
         if not s:
             s = {"flow": None, "step": None, "data": {}, "at": time.time()}
-            _sessions[phone] = s
         s["at"] = time.time()
+        _sessions[phone] = s
         return s
+
+
+def save(phone):
+    with _lock:
+        s = _sessions.get(phone)
+        if s and s.get("flow"):
+            store.save_session(phone, s)
 
 
 def set_step(phone, flow, step, **data):
@@ -57,11 +65,13 @@ def set_step(phone, flow, step, **data):
         s["data"] = {}
     s["flow"], s["step"] = flow, step
     s["data"].update(data)
+    save(phone)
 
 
 def clear(phone):
     with _lock:
         _sessions.pop(phone, None)
+    store.delete_session(phone)
 
 
 def _norm(text):
@@ -360,6 +370,7 @@ def handle_text(ctx, text):
                                [("menu:main", "Main menu")])
             return True
         s["data"]["tries"] = s["data"].get("tries", 0) + 1
+        save(ctx.phone)
         if s["data"]["tries"] >= 3:
             clear(ctx.phone)
             return False  # let the AI take over

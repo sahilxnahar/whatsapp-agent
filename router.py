@@ -26,6 +26,7 @@ def handle(sender, msg, name=""):
 
 def _handle(sender, msg, phone, name):
     is_new = store.touch_inbound(phone, name)
+    _log_inbound(phone, msg)
     if msg.get("id"):
         sender.mark_read(msg["id"])
     ctx = Ctx(sender, phone, name)
@@ -87,6 +88,23 @@ def handle_text(ctx, text, is_new=False):
     else:
         sender.text(phone, answer)
         sender.buttons(phone, "Anything else?", flows.after_answer_buttons())
+
+
+def _log_inbound(phone, msg):
+    mtype = msg.get("type", "unknown")
+    if mtype == "text":
+        body = msg["text"]["body"]
+    elif mtype == "interactive":
+        inter = msg["interactive"]
+        body = (inter.get("button_reply") or inter.get("list_reply") or {}).get("title", "")
+    elif mtype == "button":
+        body = msg["button"].get("text", "")
+    else:
+        body = (msg.get(mtype) or {}).get("caption") or f"<{mtype}>"
+    try:
+        store.log_message(phone, "in", mtype, body, msg)
+    except Exception as e:
+        print(f"[error] message log: {e}")
 
 
 def _rate_limited(phone, sender=None):
