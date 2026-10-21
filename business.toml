@@ -1,0 +1,107 @@
+# Business settings for the scripted menus, booking and branded images.
+# Everything marked TODO is sample data - replace it with your real details.
+# The AI's knowledge (FAQs, policies, tone) lives in knowledge.md.
+
+[brand]
+name = "Your Brand"                         # TODO
+assistant_name = "Team Your Brand (AI assistant)"  # TODO
+owner_name = "the owner"                    # TODO e.g. "Sahil" - used in "Talk to Sahil"
+tagline = "Short line about what you do"    # TODO
+timezone = "Asia/Kolkata"
+primary_color = "#FFC700"                   # TODO brand colour (hex)
+dark_color = "#141414"
+light_color = "#FAFAF7"
+logo = "assets/logo.png"                    # optional; square image works best
+photo = "assets/photo.jpg"                  # optional; shown on the welcome banner
+ticket_prefix = "YB"                        # booking ticket IDs look like YB-7Q2K
+upi_id = "yourname@upi"                     # TODO used for the QR in demo/manual payment modes
+website = "https://example.com"             # TODO
+
+[menu]
+greeting = "Hi{name}! I'm {assistant}. Tap an option below or just type your question."
+button = "Choose an option"
+
+# Rows in the welcome list (max 10). Keep the ids; title <= 24 chars, description <= 72.
+[[menu.rows]]
+id = "brief"
+title = "Work with us"
+description = "Share your requirement and get a quote"
+
+[[menu.rows]]
+id = "book"
+title = "Book a call"
+description = "Pick a slot that suits you"
+
+[[menu.rows]]
+id = "guide"
+title = "Free guide"
+description = "Get our guide as a PDF"
+
+[[menu.rows]]
+id = "waitlist"
+title = "Join the waitlist"
+description = "Be first to hear about new launches"
+
+[[menu.rows]]
+id = "ask"
+title = "Ask a question"
+description = "Type anything about our services"
+
+[[menu.rows]]
+id = "human"
+title = "Talk to a human"
+description = "We'll get back to you personally"
+
+# Services shown on the rate card and offered in the brief form.
+[[services]]
+id = "svc1"
+title = "Service one"             # TODO
+price = "Rs 5,000"                # TODO shown as text, so "from Rs 5k" is fine
+description = "What's included"   # TODO
+
+[[services]]
+id = "svc2"
+title = "Service two"
+price = "Rs 12,000"
+description = "What's included"
+
+[[services]]
+id = "svc3"
+title = "Custom package"
+price = "On request"
+description = "Tell us what you need"
+
+[brief]
+budgets = ["Under Rs 10k", "Rs 10k - 25k", "Rs 25k - 50k", "Rs 50k - 1L", "Above Rs 1L"]
+timelines = ["This week", "This month", "Flexible"]
+
+# Call types for booking. price_inr = 0 means free (no payment step).
+[[call_types]]
+id = "intro"
+title = "Free intro call"
+minutes = 15
+price_inr = 0
+
+[[call_types]]
+id = "consult"
+title = "Consultation"
+minutes = 45
+price_inr = 999                  # TODO
+
+# Working hours for bookable slots.
+[hours]
+days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+start = "10:00"
+end = "19:00"
+slot_step_minutes = 30           # slots start every 30 minutes
+buffer_minutes = 15              # gap kept after each booking
+min_notice_hours = 2             # no bookings sooner than this
+days_ahead = 14
+
+# Files the bot can send (catalogue, guide, menu). Put the PDF in assets/.
+[[files]]
+id = "guide"
+title = "Free guide"
+path = "assets/guide.pdf"        # TODO add your PDF
+filename = "Guide.pdf"
+caption = "Here's your free guide!"
