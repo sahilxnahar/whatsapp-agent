@@ -105,3 +105,12 @@ title = "Free guide"
 path = "assets/guide.pdf"        # TODO add your PDF
 filename = "Guide.pdf"
 caption = "Here's your free guide!"
+
+# Approved WhatsApp templates, needed to message someone 24+ h after their last message.
+# Create them in WhatsApp Manager with exactly these names and body variables (see README).
+# Leave a name empty to skip that message outside the window.
+[templates]
+language = "en"
+booking_reminder = "booking_reminder"   # body: {{1}} name, {{2}} call type, {{3}} date & time
+daily_summary = "daily_summary"         # body: {{1}} chats, {{2}} leads, {{3}} bookings, {{4}} revenue
+follow_up = "follow_up"                 # body: {{1}} name

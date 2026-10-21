@@ -389,11 +389,12 @@ def send_file(ctx, file_id):
 
 
 def handover(ctx, reason, quiet=False):
-    store.append_jsonl("handover.jsonl", {"phone": ctx.phone, "name": ctx.name, "reason": reason})
+    rec = store.append_jsonl("handover.jsonl", {"phone": ctx.phone, "name": ctx.name, "reason": reason})
     store.pause(ctx.phone, config.HANDOVER_PAUSE_HOURS)
     clear(ctx.phone)
-    print(f"[handover] {ctx.phone} ({ctx.name}): {reason}")
-    notify_owner(ctx.sender, f"Handover: +{ctx.phone} ({ctx.name or 'no name'}) - {reason}")
+    print(f"[handover] #{rec['_id']} {ctx.phone} ({ctx.name}): {reason}")
+    notify_owner(ctx.sender, f"Handover #{rec['_id']}: +{ctx.phone} ({ctx.name or 'no name'}) - {reason}\n"
+                             f"Reply with: /r {rec['_id']} your message")
     if not quiet:
         ctx.sender.text(ctx.phone, f"Done - I've flagged this chat for {owner()}, who will reply here "
                                    "personally soon. Type *menu* anytime to come back to me.")

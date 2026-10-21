@@ -6,6 +6,7 @@ from collections import defaultdict, deque
 import brain
 import config
 import flows
+import owner
 import store
 from flows import Ctx
 
@@ -31,6 +32,11 @@ def _handle(sender, msg, phone, name):
         sender.mark_read(msg["id"])
     ctx = Ctx(sender, phone, name)
     mtype = msg.get("type")
+
+    if mtype == "text" and owner.is_owner(phone) and msg["text"]["body"].lstrip().startswith("/"):
+        print(f"[owner] {msg['text']['body'][:80]}")
+        if owner.handle(sender, msg["text"]["body"]):
+            return
 
     if mtype == "interactive":
         inter = msg["interactive"]

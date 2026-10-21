@@ -1,38 +1,27 @@
 # Owner's manual
 
-## Where everything lives (`data/`)
+## Where everything lives (`data/bot.db`)
 
-| File | What's in it |
+Everything is in one SQLite file. Open it with any SQLite viewer (for example the free *DB Browser for SQLite*), or use the `/` commands below.
+
+| Table | What's in it |
 |---|---|
-| `leads.jsonl` | Every lead. `source: form` comes from the menu brief; `source: ai` was spotted by Claude in a chat (need, budget, timeline) |
-| `bookings.json` | Live holds and confirmed bookings (ticket, time, payment) |
-| `bookings.jsonl` | Log of every confirmed booking |
-| `handover.jsonl` | Chats waiting for you, with the reason |
-| `waitlist.jsonl` | Waitlist emails |
-| `payments_to_verify.jsonl` | In `manual` payment mode: customers who tapped "I've paid" |
-| `refunds_needed.jsonl` | Paid, but the slot was gone by the time the payment landed. Rebook or refund |
-| `contacts.json` | Every customer: name, first seen, last message, paused or not |
-| `chats.json` | The AI's memory per customer |
-
-Each `.jsonl` file has one record per line, so you can open it in any text editor or import it into Google Sheets.
+| `events` | Logs by `kind`: `leads` (`source: form` from the menu, `source: ai` spotted by Claude), `handover`, `waitlist`, `bookings`, `payments_to_verify`, `refunds_needed`, `human_replies` |
+| `bookings` / `holds` | Confirmed bookings and 10-minute slot holds |
+| `messages` | Every message in and out, per customer |
+| `contacts` | Every customer: name, first seen, last message, paused or not |
+| `chats` | The AI's memory per customer |
+| `reminders_sent` | Which reminders went out, so none repeat |
 
 ## Taking over a chat
 
 - A chat is handed to you when the customer taps **Talk to a human** or types "human", or when Claude decides to hand over (complaint, refund, legal, a big custom deal). The bot logs it in `handover.jsonl`, alerts `OWNER_PHONE` and then **stays silent** for that customer for 12 hours (`HANDOVER_PAUSE_HOURS`).
-- To reply as yourself:
-
-  ```bash
-  python bot.py send 919812345678 "Hi Rahul, this is Sahil - happy to help!"
-  ```
-
-  This only works within 24 hours of the customer's last message.
-- When you're done, hand the chat back to the AI:
-
-  ```bash
-  python bot.py resume 919812345678
-  ```
-
-  The customer can also type "menu" or tap any menu button.
+- Your alert says, for example, `Handover #3 … Reply with: /r 3 your message`. From your phone, text the bot:
+  - `/r 3 Hi Rahul, this is Sahil - happy to help!` to reply as yourself (within 24 hours of their last message)
+  - `/resume 3` when you're done, to hand them back to the AI
+- `/handovers` shows everyone waiting; `/help` lists every command.
+- From a computer, the same works with `python bot.py send 919812345678 "…"` and `python bot.py resume 919812345678`.
+- The customer can also type "menu" or tap any menu button to get the bot back.
 
 Alerts reach your WhatsApp only if you have messaged the bot's number yourself in the last 24 hours. That's WhatsApp's rule. Send it a "hi" each morning.
 
@@ -47,7 +36,7 @@ Never confirm a booking just because a customer says "I paid".
 ## Daily checklist (5 minutes)
 
 1. Send "hi" to the bot from your phone. This keeps owner alerts working.
-2. Run `python bot.py summary` (or `--send` to get it on WhatsApp) to see chats, leads, bookings, revenue and handovers.
+2. Text `/summary` to the bot, or set `OWNER_SUMMARY_TIME=20:00` to get it automatically every evening.
 3. Reply to every handover, then `resume` the chat.
 4. Follow up on new leads.
 5. Check the Anthropic Console spend and the host's logs for `[error]` / `[whatsapp]` lines.
@@ -61,7 +50,8 @@ Never confirm a booking just because a customer says "I paid".
 - [ ] `python bot.py subscribe` shows your app listed
 - [ ] Real business number, display name approved, business verified
 - [ ] Business profile says "Replies may be AI-assisted"
-- [ ] Templates approved for anything sent outside 24 hours (reminders, follow-ups)
+- [ ] Templates `booking_reminder`, `daily_summary` and `follow_up` approved in Meta (see README → Templates to submit)
+- [ ] `OWNER_PHONE` set and `/help` answered from your phone
 - [ ] `knowledge.md` and `business.toml` reviewed: real prices, policies, hours, UPI ID, no TODOs left
 - [ ] Real `assets/guide.pdf` (and logo/photo) in place
 - [ ] `PAYMENT_MODE` is `manual` or `razorpay`, never `demo`. Razorpay webhook tested in test mode

@@ -26,13 +26,13 @@ import config
 import flows
 import payments
 import router
+import scheduler
 import slots
 import store
 from whatsapp import FakeSender, WhatsAppSender
 
 MAX_AGE_SECONDS = 5 * 60  # Meta redelivers old messages after outages; don't answer stale ones
 
-_sweeper_started = False
 
 
 def create_app():
@@ -90,7 +90,7 @@ def create_app():
             threading.Thread(target=_payment_received, args=(sender, hold_id, payment_id), daemon=True).start()
         return "ok", 200
 
-    _start_sweeper(sender)
+    scheduler.start(sender)
     return app
 
 
@@ -124,26 +124,6 @@ def _payment_received(sender, hold_id, payment_id):
         sender.text(hold["phone"], "We received your payment, but that slot was taken meanwhile 🙏 "
                                    "The team will contact you to pick a new time or refund you.")
         flows.notify_owner(sender, f"Payment {payment_id} received for a taken slot ({hold_id}). Rebook or refund.")
-
-
-def _start_sweeper(sender):
-    """Release expired holds every minute and tell the customer."""
-    global _sweeper_started
-    if _sweeper_started:
-        return
-    _sweeper_started = True
-
-    def loop():
-        while True:
-            try:
-                for hold in slots.expire_holds():
-                    print(f"[booking] hold {hold['id']} expired")
-                    flows.notify_expired(sender, hold)
-            except Exception as e:
-                print(f"[error] sweeper: {e}")
-            time.sleep(60)
-
-    threading.Thread(target=loop, daemon=True).start()
 
 
 # ---- command line ----------------------------------------------------------------
@@ -192,24 +172,8 @@ def tap_message(phone, opt_id, title):
 
 
 def cmd_summary(send=False):
-    today = config.now().date().isoformat()
-
-    def todays(name):
-        return [r for r in store.read_jsonl(name) if r.get("ts", "").startswith(today)]
-
-    contacts = store.all_contacts()
-    active = sum(1 for c in contacts.values() if (c.get("last_inbound") or "").startswith(today))
-    new = sum(1 for c in contacts.values() if (c.get("first_seen") or "").startswith(today))
-    leads, bookings = todays("leads.jsonl"), todays("bookings.jsonl")
-    handovers, waitlist = todays("handover.jsonl"), todays("waitlist.jsonl")
-    revenue = sum(b.get("amount", 0) for b in bookings if b.get("paid_via") not in ("demo", "free"))
-    lines = [f"*Daily summary - {config.BRAND['name']}* ({today})",
-             f"Chats: {active} ({new} new)", f"Leads: {len(leads)}", f"Bookings: {len(bookings)}",
-             f"Revenue: Rs {revenue:,}", f"Waitlist sign-ups: {len(waitlist)}",
-             f"Handovers: {len(handovers)}"]
-    lines += [f"• Lead: +{x['phone']} {x.get('need') or x.get('service')} / {x.get('budget')}" for x in leads[:5]]
-    lines += [f"• Human needed: +{h['phone']} - {h['reason']}" for h in handovers[:5]]
-    text = "\n".join(lines)
+    import owner
+    text = owner.summary_text()
     print(text)
     if send:
         if not config.OWNER_PHONE:

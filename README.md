@@ -1,9 +1,13 @@
 # WhatsApp Agent
 
+[![tests](https://github.com/sahilxnahar/whatsapp-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/sahilxnahar/whatsapp-agent/actions/workflows/tests.yml)
+
 A WhatsApp assistant for your business on Meta's **official WhatsApp Business Platform (Cloud API)**, with **Claude** as the brain.
 
 - Tap menus, booking, payments, files, waitlist and human handover are **scripted**: instant, exact, no AI cost.
 - Typed messages go to Claude. It answers from `knowledge.md` in English or Hinglish, books calls from phrases like "kal shaam call?", captures leads and hands over to you when needed.
+- You run it from your own WhatsApp: reply to customers, hand chats back to the AI and get the daily summary with `/` commands.
+- Booked customers get reminders 24 hours and 1 hour before their call.
 
 ## What to fill in (the only edits you need)
 
@@ -14,20 +18,24 @@ A WhatsApp assistant for your business on Meta's **official WhatsApp Business Pl
 | `knowledge.md` | What the AI knows: about you, tone, prices, FAQs, what to decline, when to hand over |
 | `assets/` | `logo.png`, `photo.jpg` (optional) and your real `guide.pdf` (the current one is a placeholder) |
 
-Restart the bot after editing any of them.
+`business.toml` and `knowledge.md` changes apply automatically on the next message; restart after editing `.env` or `assets/`.
 
 ## Files
 
 ```
-bot.py        webhook server + owner commands (python bot.py help)
+bot.py        webhook server + command line (python bot.py help)
+owner.py      owner commands you text to the bot (/r, /resume, /summary ...)
+scheduler.py  every minute: expire holds, booking reminders, daily summary
 router.py     decides: scripted flow, Claude, or human
 flows.py      menus, brief form, booking + payment, files, waitlist, handover
-brain.py      Claude: persona, tools (slots / file / handover), memory, lead capture
+brain.py      Claude: persona, memory, lead capture, cost routing
+brain_tools.py  Claude tools: slots, file, handover
 slots.py      free slots, 10-minute holds, bookings
 payments.py   demo / manual UPI / Razorpay (webhook-confirmed)
 cards.py      branded images: banner, rate card, QR card, ticket
 whatsapp.py   Cloud API sender (limits, retries, media upload) + fake sender for tests
-store.py      JSON storage in data/
+store.py      storage helpers on top of db.py
+db.py         SQLite database: data/bot.db
 tests/        offline tests (free) + persona test (real Claude)
 ```
 
@@ -63,7 +71,7 @@ python3 -m venv .venv
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-The 21 offline tests are free. They cover the menu, brief form, free and paid booking, hold expiry, waitlist, handover, file delivery, the Claude tool loop, lead capture, error self-healing and the webhook signature.
+The offline tests are free and also run on GitHub for every push. They cover the menu, brief form, free and paid booking, hold expiry, waitlist, handover, file delivery, the Claude tool loop, lead capture, error self-healing, the webhook signature, storage and migration, cost routing, owner commands and reminders.
 
 After adding your Claude key:
 
@@ -118,12 +126,51 @@ Quick-tunnel addresses change on every restart, so re-paste the Callback URL eac
    - `demo`: a fake QR clearly labelled DEMO. Testing only.
    - `manual`: a real UPI QR to `upi_id`. You check your UPI app, then run `python bot.py confirm <hold_id>`.
    - `razorpay`: a payment link per booking, confirmed **only** by Razorpay's signed webhook. In the Razorpay Dashboard → Webhooks, add `https://<host>/razorpay/webhook` with the event `payment_link.paid` and a secret, then put that secret in `RAZORPAY_WEBHOOK_SECRET` and your API keys in `RAZORPAY_KEY_ID`/`RAZORPAY_KEY_SECRET`. Start in test mode.
-5. **Templates**: messaging someone 24+ hours after their last message needs an approved template (booking reminder, payment received, follow-up). Create them in WhatsApp Manager and send only to people who opted in.
+5. **Templates**: messaging someone 24+ hours after their last message needs an approved template. The bot uses free text when it can and falls back to these. See [Templates to submit](#templates-to-submit).
 6. Run through the go-live checklist in `OWNERS_MANUAL.md`.
+
+## Run it from your phone
+
+Set `OWNER_PHONE` in `.env` to your own WhatsApp number, then text the bot's number:
+
+| Command | What it does |
+|---|---|
+| `/r 3 Hi, this is Sahil` | Reply to handover #3 as yourself (or `/r 919812345678 …`). The AI stays quiet for that customer |
+| `/resume 3` | Hand the chat back to the AI (`/pause 3` does the opposite) |
+| `/handovers` | Who's waiting for you, with their #numbers |
+| `/today` | Today's bookings |
+| `/leads` | The 5 newest leads |
+| `/summary` | Today's numbers |
+| `/confirm H1a2b3c4d5` | Confirm a UPI payment you checked (manual payment mode) |
+| `/help` | This list |
+
+Every handover alert ends with the exact `/r` command to use. Only `OWNER_PHONE` can run these. Alerts and replies reach you only if you've messaged the bot in the last 24 hours (WhatsApp's rule), so send it a "hi" each morning, or set `OWNER_SUMMARY_TIME` (e.g. `20:00`) to get the daily summary automatically.
+
+## Booking reminders
+
+Every confirmed booking gets a reminder 24 hours before and 1 hour before the call, each sent once. Bookings made later than a reminder time skip that reminder. Inside the 24-hour window it's a normal message (free); outside it, the bot uses the `booking_reminder` template.
+
+## Templates to submit
+
+In WhatsApp Manager → Message templates → Create, use category **Utility** and language **English**, with these exact names (or change the names under `[templates]` in `business.toml`):
+
+| Name | Body text to submit |
+|---|---|
+| `booking_reminder` | `Hi {{1}}, a reminder about your {{2}} on {{3}}. Reply here if you need to change it.` |
+| `daily_summary` | `Today's summary: {{1}} chats, {{2}} leads, {{3}} bookings, revenue {{4}}.` |
+| `follow_up` | `Hi {{1}}, just following up on your enquiry. Reply here whenever you're ready.` |
+
+Meta usually approves utility templates within a day. Send templates only to people who have messaged you; utility templates cost a few paise each in India.
+
+## Moving from v1 storage
+
+v2 keeps everything in one SQLite file, `data/bot.db`. If you ran v1, import its files once with `python bot.py migrate`. The old files are kept, renamed `*.migrated`.
 
 ## Change the AI model
 
 Edit `CLAUDE_MODEL` in `.env` (or the host variables) and restart. Then run `python tests/persona_test.py` to compare tone.
+
+To save money, set `ROUTING=auto`. Chats start on `CLAUDE_MODEL_FAST` (Haiku) and move to `CLAUDE_MODEL` for 24 hours as soon as a booking, lead, complaint, photo or tricky question comes up.
 
 | Model | About per 100 typed messages | Use for |
 |---|---|---|
